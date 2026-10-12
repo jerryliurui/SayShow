@@ -1,0 +1,7 @@
+# 个人设置不入库（可为指向私有位置的链接）
+profile.json
+# 依赖与生成物
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store

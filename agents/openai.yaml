@@ -1,0 +1,4 @@
+interface:
+  display_name: "SayShow 讲解视频"
+  short_description: "制作有旁白、同步字幕和语义动效的小红书视频笔记，支持逐轮优化"
+  default_prompt: "用 $say-show 把我的素材制作成小红书视频笔记，优先保证旁白自然、字幕准确同步、画面解释内容。"

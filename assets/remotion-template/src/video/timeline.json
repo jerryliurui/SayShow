@@ -1,0 +1,59 @@
+{
+ "fps": 30,
+ "durationInFrames": 420,
+ "voice": null,
+ "music": null,
+ "sections": [
+  {
+   "id": "intro",
+   "title": "示例",
+   "start": 0.0,
+   "voiceEnd": 6.0,
+   "end": 6.5,
+   "startFrame": 0,
+   "voiceEndFrame": 180,
+   "endFrame": 195
+  },
+  {
+   "id": "outro",
+   "title": "下一期见",
+   "start": 6.5,
+   "voiceEnd": 11.0,
+   "end": 14.0,
+   "startFrame": 195,
+   "voiceEndFrame": 330,
+   "endFrame": 420
+  }
+ ],
+ "captions": [
+  {
+   "text": "示例：一条视频有三层",
+   "startFrame": 9,
+   "endFrame": 75
+  },
+  {
+   "text": "旁白、动画、配乐",
+   "startFrame": 75,
+   "endFrame": 195
+  },
+  {
+   "text": "我是示例作者",
+   "startFrame": 198,
+   "endFrame": 255
+  },
+  {
+   "text": "觉得有用就一键三连，我们下一期见",
+   "startFrame": 255,
+   "endFrame": 348
+  }
+ ],
+ "anchors": {
+  "intro.旁白": 78,
+  "intro.动画": 108,
+  "intro.配乐": 138,
+  "outro.示例作者": 216,
+  "outro.一键三连": 282,
+  "outro.下一期见": 312
+ },
+ "words": []
+}
