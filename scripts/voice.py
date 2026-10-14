@@ -53,7 +53,8 @@ def tts_text(display, sid):
         for k, v in table.items():
             display = display.replace(k, v)
     display = re.sub(r"(\d)\s*([KMGT])B\b", r"\1 \2 B", display)   # 500 MB 读作“五百 M B”，不读“兆比”
-    return re.sub(r"(?<=[一-鿿，。：；、！？])\s+(?=[A-Za-z0-9])|(?<=[A-Za-z0-9])\s+(?=[一-鿿，。：；、！？])", "", display)
+    # 去掉中英之间、以及读音替换后汉字与汉字之间残留的空格（"跟 AI 编程" 换成 "跟 诶哎 编程" 时会出现）
+    return re.sub(r"(?<=[一-鿿，。：；、！？])\s+(?=[A-Za-z0-9一-鿿])|(?<=[A-Za-z0-9])\s+(?=[一-鿿，。：；、！？])", "", display)
 
 
 def parse_script():
@@ -92,6 +93,41 @@ def synth(text, seed, out):
     res = list(_model["m"].generate(text=text, ref_audio=V["ref_audio"], ref_text=V["ref_text"], lang_code=V["lang"], temperature=V["temperature"]))
     out.parent.mkdir(parents=True, exist_ok=True)
     sf.write(out, np.concatenate([np.array(r.audio) for r in res]), res[0].sample_rate)
+
+
+_ref = {}
+
+
+def voice_stats(wav):
+    """声线检查：用模型自带的说话人编码器算与参考录音的余弦相似度，再给出有声段基频中位数（Hz）。
+    同一参考、不同种子合成的段落之间也会漂移（实测开场段 0.94、其余 0.99），所以每段都量。"""
+    import mlx.core as mx
+    if "m" not in _model:
+        from mlx_audio.tts.utils import load_model
+        _model["m"] = load_model(V["model"])
+
+    def load24(p):
+        pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(p), "-ac", "1", "-ar", "24000", "-f", "f32le", "-"], capture_output=True, check=True).stdout
+        return np.frombuffer(pcm, np.float32)
+
+    def emb(x):
+        e = np.array(_model["m"].extract_speaker_embedding(mx.array(x))).reshape(-1)
+        return e / np.linalg.norm(e)
+
+    if "e" not in _ref:
+        _ref["e"] = emb(load24(V["ref_audio"]))
+    x = load24(wav)
+    sim = float(emb(x) @ _ref["e"])
+    hop, w, f0 = 240, 960, []
+    for i in range(0, len(x) - w, hop):
+        fr = x[i:i + w]
+        if np.sqrt((fr ** 2).mean()) < 0.02:
+            continue
+        fr = fr - fr.mean(); c = np.correlate(fr, fr, "full")[w - 1:]
+        k = 60 + int(np.argmax(c[60:343]))   # 70–400 Hz
+        if c[k] > 0.3 * c[0]:
+            f0.append(24000 / k)
+    return sim, float(np.median(f0)) if f0 else 0.0
 
 
 def compress(x, sr):
@@ -191,8 +227,9 @@ def build_section(sec):
     proc = raw.with_name(raw.stem + "-处理.wav")
     prepare(raw, proc)
     start, end, matched, words = align(proc, sec["display"])
+    sim, f0 = voice_stats(raw)
     y, sr = sf.read(proc)
-    print(f"{sec['id']}: {len(y) / sr:.2f}s，稿件字对齐 {matched * 100:.0f}%" + ("  ⚠ 对齐率偏低，请抽查" if matched < 0.9 else ""), flush=True)
+    print(f"{sec['id']}: {len(y) / sr:.2f}s，稿件字对齐 {matched * 100:.0f}%，声线相似度 {sim:.3f}，基频 {f0:.0f} Hz" + ("  ⚠ 对齐率偏低，请抽查" if matched < 0.9 else ""), flush=True)
     display = sec["display"]; nidx, n = [], 0
     for c in display:
         nidx.append(n); n += c.isalnum()
@@ -204,7 +241,7 @@ def build_section(sec):
 
     pcm = subprocess.run(["ffmpeg", "-v", "error", "-i", str(proc), "-ac", "1", "-ar", str(SR), "-f", "s16le", "-"], capture_output=True, check=True).stdout
     proc.unlink()
-    return {**sec, "audio": pcm, "dur": len(pcm) / 2 / SR, "words": words, "matched": matched,
+    return {**sec, "audio": pcm, "dur": len(pcm) / 2 / SR, "words": words, "matched": matched, "sim": sim, "f0": f0,
             "captions": [{"text": show(t), "start": time_at(s)} for s, t in split_captions(display, sec["forced"])],
             "anchor_times": {name: time_at(ch) for name, ch in sec["anchors"]}}
 
@@ -238,6 +275,10 @@ def build():
     han = len(re.sub(r"[^一-鿿]", "", "".join(s["display"] for s in secs)))
     print(f"总长 {t:.2f}s（{tl['durationInFrames']} 帧），{len(captions)} 条字幕；口播约 {han / sum(s['dur'] for s in secs) * 60:.0f} 汉字/分钟；"
           f"最低对齐率 {min(s['matched'] for s in secs) * 100:.0f}%")
+    sims, f0s = np.array([s["sim"] for s in secs]), np.array([s["f0"] for s in secs])
+    odd = [s["id"] for s in secs if s["sim"] < min(0.98, np.median(sims) - 0.015) or abs(s["f0"] / np.median(f0s) - 1) > 0.1]
+    print(f"声线：相似度 {sims.min():.3f}–{sims.max():.3f}，基频 {f0s.min():.0f}–{f0s.max():.0f} Hz" +
+          (f"  ⚠ 声线偏离：{','.join(odd)}，用 takes 换种子后 pick 相似度高、基频接近中位数的一版" if odd else "，各段一致"))
     print("下一步：运行 music.py（旁白每次重建后都要重跑，配乐长度和压低位置跟着旁白走）")
 
 
@@ -254,10 +295,11 @@ def takes(ids, seeds):
                 synth(text, seed, raw)
             proc = raw.with_name(raw.stem + "-处理.wav"); prepare(raw, proc)
             _, _, matched, words = align(proc, sec["display"]); proc.unlink()
+            sim, f0 = voice_stats(raw)
             asr = "".join(w["text"] for w in words)
-            print(f"  种子 {seed}  对齐 {matched * 100:.0f}%  {asr}", flush=True)
+            print(f"  种子 {seed}  对齐 {matched * 100:.0f}%  声线 {sim:.3f}  基频 {f0:.0f} Hz  {asr}", flush=True)
             with open(log, "a") as fh:
-                fh.write(json.dumps({"id": sid, "seed": seed, "matched": round(matched, 3), "asr": asr}, ensure_ascii=False) + "\n")
+                fh.write(json.dumps({"id": sid, "seed": seed, "matched": round(matched, 3), "sim": round(sim, 4), "f0": round(f0), "asr": asr}, ensure_ascii=False) + "\n")
 
 
 def pick(pairs):

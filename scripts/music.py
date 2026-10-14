@@ -121,11 +121,12 @@ music = track(a.track) if a.track else synth(M.get("bpm", 124))
 with wave.open(str(REMOTION / "public" / T["voice"]), "rb") as wv:
     voice = np.frombuffer(wv.readframes(wv.getnframes()), "<i2").astype(float) / 32768
 active = np.zeros(n, bool)
+hold = M.get("duck_hold", 0.0)   # 旁白停下后保持压低的秒数；短停顿不回升，避免配乐一抽一抽
 for w in T["words"]:
-    active[int(max(0, w["start"] - 0.05) * SR): int((w["end"] + 0.08) * SR)] = True
+    active[int(max(0, w["start"] - 0.05) * SR): int((w["end"] + 0.08 + hold) * SR)] = True
 target = np.where(active, 10 ** (M.get("duck_db", -13) / 20), 1.0)
 gain = np.empty(n); g = 1.0
-att, rel = 1 - np.exp(-1 / (0.05 * SR)), 1 - np.exp(-1 / (0.25 * SR))
+att, rel = 1 - np.exp(-1 / (0.05 * SR)), 1 - np.exp(-1 / (M.get("duck_release", 0.25) * SR))
 for i in range(n):
     g += (target[i] - g) * (att if target[i] < g else rel); gain[i] = g
 ramp = np.clip(tt / M.get("fade_in", 1.5), 0, 1)
