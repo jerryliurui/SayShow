@@ -7,7 +7,7 @@
   ~/.venvs/say-show/bin/python voice.py pick fix=2 date=3     # 采用候选：写入 video.json 的 seeds 并放进缓存
   ~/.venvs/say-show/bin/python voice.py clean                 # 删除候选与不再使用的缓存
 
-稿件格式：`## 段落id · 标题` 后接正文；`[[词]]` 为画面锚点，`|` 为字幕强制换条，两者都不进入配音和字幕。
+稿件格式：`## 段落id · 标题` 后接正文；`[[词]]` 为画面锚点，`|` 为字幕强制换条，两者都不进入配音和字幕；同一段中间空一行表示换话题，配音在此多停 timing.beat_pause 秒（默认 0.55）。
 读音：video.json 的 pronounce（全局）与 pronounce_sections（按段）只改送给 TTS 的文字；数字后的 MB/GB 等自动拆成字母。
 声音模型不提供词边界，时间来自对最终音频的 Whisper 逐字识别，再与稿件逐字比对，没对上的字插值。
 不要把稿件原文作为 Whisper 提示词：实测会让对齐率大幅下降。
@@ -61,15 +61,20 @@ def parse_script():
     text = (BASE / CFG.get("script", "旁白稿.md")).read_text()
     secs = []
     for m in re.finditer(r"^## (\w+) · (.+?)\n\n(.+?)(?=\n## |\Z)", text, re.S | re.M):
-        raw = m.group(3).strip()
-        forced = set()
-        while "|" in raw:
-            i = raw.index("|"); forced.add(len(re.sub(r"\[\[|\]\]", "", raw[:i]))); raw = raw[:i] + raw[i + 1:]
+        # 段内空一行 = 换了话题：字幕在此换条，配音在此加一段 beat_pause 停顿（见 add_beats）
+        raw = re.sub(r"[ \t]*\n[ \t]*\n\s*", "¶", m.group(3).strip()).replace("\n", "")
+        forced, beats = set(), set()
+        while "|" in raw or "¶" in raw:
+            i = min(raw.find(c) for c in "|¶" if c in raw)
+            pos = len(re.sub(r"\[\[|\]\]", "", raw[:i])); forced.add(pos)
+            if raw[i] == "¶":
+                beats.add(pos)
+            raw = raw[:i] + raw[i + 1:]
         anchors, display, k = [], "", 0
         for a in re.finditer(r"\[\[(.+?)\]\]", raw):
             display += raw[k:a.start()]; anchors.append((a.group(1), len(display))); display += a.group(1); k = a.end()
         display += raw[k:]
-        secs.append({"id": m.group(1), "title": m.group(2).strip(), "display": display, "forced": forced, "anchors": anchors})
+        secs.append({"id": m.group(1), "title": m.group(2).strip(), "display": display, "forced": forced, "beats": beats, "anchors": anchors})
     if not secs:
         sys.exit("旁白稿里没有找到 `## id · 标题` 段落")
     return secs
@@ -217,6 +222,38 @@ def split_captions(display, forced=()):
     return [(s, t.strip().rstrip("，。：；、,").strip()) for s, t in phrases if t.strip()]
 
 
+def add_beats(proc, sec, start, end):
+    """在段内换话题处（旁白稿里同一段中间空一行）插入 beat_pause 秒静音。
+    同一段整段合成、句间停顿统一压到 keep_pause，话题一转就显得赶（用户反馈"修好了"接"为什么"太快）。
+    位置：两句之间的静音里能量最低的 10 毫秒。插入后需要重新对齐。"""
+    beat = TM.get("beat_pause", 0.55)
+    if beat <= 0:
+        return False
+    x, sr = sf.read(proc)
+    display = sec["display"]; nidx, n = [], 0
+    for c in display:
+        nidx.append(n); n += c.isalnum()
+    cuts = []
+    for pos in sec["beats"]:
+        while pos < len(display) and not display[pos].isalnum():
+            pos += 1
+        k = nidx[pos] if pos < len(display) else n
+        if k <= 0 or k >= n:
+            continue
+        a, b = int(max(end[k - 1] - 0.15, 0) * sr), int(min(start[k] + 0.15, len(x) / sr) * sr)
+        hop = sr // 100
+        if b - a < hop:
+            continue
+        rms = [np.sqrt((x[i:i + hop] ** 2).mean()) for i in range(a, b - hop, hop)]
+        cuts.append(a + int(np.argmin(rms)) * hop + hop // 2)
+    if not cuts:
+        return False
+    for c in sorted(cuts, reverse=True):
+        x = np.concatenate([x[:c], np.zeros(int(beat * sr)), x[c:]])
+    sf.write(proc, x, sr)
+    return True
+
+
 def build_section(sec):
     text = tts_text(sec["display"], sec["id"])
     seed = CFG.get("seeds", {}).get(sec["id"])
@@ -227,6 +264,8 @@ def build_section(sec):
     proc = raw.with_name(raw.stem + "-处理.wav")
     prepare(raw, proc)
     start, end, matched, words = align(proc, sec["display"])
+    if sec["beats"] and add_beats(proc, sec, start, end):
+        start, end, matched, words = align(proc, sec["display"])
     sim, f0 = voice_stats(raw)
     y, sr = sf.read(proc)
     print(f"{sec['id']}: {len(y) / sr:.2f}s，稿件字对齐 {matched * 100:.0f}%，声线相似度 {sim:.3f}，基频 {f0:.0f} Hz" + ("  ⚠ 对齐率偏低，请抽查" if matched < 0.9 else ""), flush=True)
