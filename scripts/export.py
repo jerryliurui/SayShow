@@ -5,6 +5,8 @@
   python3 export.py ../成品/02-标题-横版.mp4                 # 完整渲染并导出
   python3 export.py ../成品/02-标题-横版.mp4 --input 已渲染.mp4   # 跳过渲染，只做响度与检查
   python3 export.py --cover ../成品/01-竖版封面.jpg            # 只渲染竖版封面
+  python3 export.py --cover-landscape ../成品/01-横版封面.jpg  # 只渲染 16:9 横版封面
+  python3 export.py --cover-4-3 ../成品/01-横版封面-4比3.jpg  # 只渲染 4:3 横版封面
 
 渲染需要启动 Chrome，Claude Code 的沙箱里会超时，需要在沙箱外运行。整片渲染约 10 fps，3 分钟视频约 10 分钟。
 """
@@ -26,6 +28,8 @@ def run(cmd, **kw):
 ap = argparse.ArgumentParser()
 ap.add_argument("out", nargs="?")
 ap.add_argument("--input", help="已渲染的视频，跳过渲染")
+ap.add_argument("--cover-4-3", dest="cover_4_3", help="渲染 4:3 横版封面到此路径")
+ap.add_argument("--cover-landscape", help="渲染横版封面到此路径")
 ap.add_argument("--cover", help="渲染竖版封面到此路径")
 ap.add_argument("--peak", type=float, default=-1.5, help="loudnorm 真峰值目标，默认 −1.5，成片实测约 −1.0 dBTP")
 a = ap.parse_args()
@@ -34,6 +38,12 @@ run(["node", "scripts/font-subsets.cjs"], cwd=REMOTION)
 if a.cover:
     run(["npx", "remotion", "still", "Cover", str(Path(a.cover).resolve()), "--timeout=180000"], cwd=REMOTION)
     print("封面 →", a.cover)
+if a.cover_landscape:
+    run(["npx", "remotion", "still", "CoverLandscape", str(Path(a.cover_landscape).resolve()), "--timeout=180000"], cwd=REMOTION)
+    print("横版封面 →", a.cover_landscape)
+if a.cover_4_3:
+    run(["npx", "remotion", "still", "CoverFourThree", str(Path(a.cover_4_3).resolve()), "--timeout=180000"], cwd=REMOTION)
+    print("4:3 横版封面 →", a.cover_4_3)
 if not a.out:
     sys.exit(0)
 
