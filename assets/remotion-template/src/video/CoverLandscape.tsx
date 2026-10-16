@@ -1,12 +1,15 @@
 import React from "react";
-import { AbsoluteFill } from "remotion";
+import { AbsoluteFill, useVideoConfig } from "remotion";
 import { FONT } from "../kit/lib";
 import brand from "./brand.json";
-// 横版封面起点：与竖版同主题、配色和主视觉，按 16:9 独立排版。
-export const CoverLandscape: React.FC = () => (
- <AbsoluteFill style={{background:"linear-gradient(125deg,#FBFCFF,#DCE5FA 50%,#F4F7FD)",fontFamily:FONT,color:"#24354F",padding:90}}>
-  <div style={{fontSize:36,fontWeight:700,color:"#647FA5"}}>{brand.kicker}</div>
-  <div style={{marginTop:150,fontSize:140,fontWeight:900,lineHeight:1.2}}>视频标题</div>
-  <div style={{marginTop:50,fontSize:44,color:"#647FA5"}}>按内容添加本期主视觉</div>
- </AbsoluteFill>
-);
+// 单张横版母图：所有关键内容在中央 1440×1080 内，左右 240px 仅作背景延伸。
+export const CoverLandscape: React.FC = () => {
+ const { width } = useVideoConfig();
+ return <AbsoluteFill style={{background:"#F4F7FD",fontFamily:FONT,color:"#24354F"}}>
+  <div style={{position:"absolute",left:(width-1440)/2,top:0,width:1440,height:1080,padding:72,boxSizing:"border-box"}}>
+   <div style={{fontSize:36,fontWeight:700,color:"#647FA5"}}>{brand.kicker}</div>
+   <div style={{marginTop:150,fontSize:140,fontWeight:900,lineHeight:1.2}}>视频标题</div>
+   <div style={{marginTop:70,fontSize:56,fontWeight:700}}>副标题与本期主视觉</div>
+  </div>
+ </AbsoluteFill>;
+};

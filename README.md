@@ -1,6 +1,6 @@
 # SayShow
 
-**说什么，就演什么。** 给 Claude Code 和 Codex 用的 Agent Skill（skill 名 `say-show`）：把素材做成**有旁白、同步字幕和讲解动画**的讲解视频，默认按小红书视频笔记的习惯（横版正文、竖版及两种横版封面（3:4、16:9、4:3）、同步字幕），流程是"稿件 → 配音 → 对齐 → 动画 → 配乐 → 导出"，保留可编辑的 Remotion 工程，可以逐轮修改。
+**说什么，就演什么。** 给 Claude Code 和 Codex 用的 Agent Skill（skill 名 `say-show`）：把素材做成**有旁白、同步字幕和讲解动画**的讲解视频，默认按小红书视频笔记的习惯（横版正文、竖版封面＋一张兼容 4:3／16:9 的横版封面、同步字幕），流程是"稿件 → 配音 → 对齐 → 动画 → 配乐 → 导出"，保留可编辑的 Remotion 工程，可以逐轮修改。
 
 ## 能做什么
 
@@ -40,7 +40,7 @@ python3 $S/new_video.py 019-主题/视频版 --title 标题 && cd 019-主题/视
 $PY $S/voice.py                     # 配音与时间线；读错时：voice.py takes 段落 1,2,3 → voice.py pick 段落=种子
 $PY $S/music.py                     # 配乐（旁白每次重建后重跑）
 python3 $S/audit_timeline.py remotion/src/video/timeline.json --srt ../成品/字幕.srt
-python3 $S/export.py ../成品/02-标题-横版.mp4 && python3 $S/export.py --cover ../成品/01-竖版封面.jpg --cover-landscape ../成品/01-横版封面.jpg --cover-4-3 ../成品/01-横版封面-4比3.jpg
+python3 $S/export.py ../成品/02-标题-横版.mp4 && python3 $S/export.py --cover ../成品/01-竖版封面.jpg --cover-landscape ../成品/01-横版封面.jpg --cover-4-3 封面预览/4比3裁切.jpg
 ```
 
 完整流程和规则见 [SKILL.md](SKILL.md)。
