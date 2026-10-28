@@ -250,6 +250,7 @@ export const Captions: React.FC = () => {
   if (!c) return null;
   return (
     <div
+      data-audit="caption"
       style={{
         position: "absolute",
         left: 0,

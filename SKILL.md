@@ -26,7 +26,7 @@ metadata:
 | 新建工程 | `scripts/new_video.py` | 复制模板、写入个人设置、链接共享依赖（`~/.cache/say-show/`，不再每条装 1.2 GB） |
 | 旁白 | `scripts/voice.py` | 合成与缓存、`takes` 多种子候选、`pick` 采用、`clean` 清理；输出 voice.wav 与 timeline.json |
 | 配乐 | `scripts/music.py` | 程序合成（BPM 可调）或 `--track` 现成曲目；按旁白自动压低、起音与淡出 |
-| 检查 | `scripts/audit_timeline.py`、`scripts/measure_rhythm.py` | 时间线结构与缺失锚点、导出 SRT；成片节奏与语速 |
+| 检查 | `scripts/audit_timeline.py`、`scripts/measure_rhythm.py`、`scripts/layout_audit.mjs` | 时间线结构与缺失锚点、导出 SRT；成片节奏与语速；按帧测量文字互压、压到对象、出画与截断 |
 | 导出 | `scripts/export.py` | 字体分片、渲染、两遍响度、峰值与解码检查、关键帧总览、导出记录、竖版封面与兼容双比例的横版母图 |
 | 画风 | `references/style-library.md` | 28 种风格加我们自己的 #29 开发实录、#30 旅程式讲解、组件对应、选型方法、三个参考原则 |
 | 开发实录 | `src/kit/dev.tsx`、`references/dev-demo.md` | 代码编辑器打字、真实录屏片段（变速、推近）、快捷键键帽、iPhone 外框、章节标签；哪些必须真实录屏、怎么录 |
@@ -41,6 +41,7 @@ $PY $S/voice.py            # 读错的段落：$PY $S/voice.py takes 段落 1,2,
 # 写 remotion/src/video/ 的场景与 scenes.tsx
 $PY $S/music.py            # 旁白每次重建后都要重跑
 python3 $S/audit_timeline.py remotion/src/video/timeline.json --srt ../成品/字幕.srt
+node $S/layout_audit.mjs                # 文字互压、压到对象、出画与裁切；看 排版检查/报告.md 和标注图
 python3 $S/export.py ../成品/02-标题-横版.mp4 && python3 $S/export.py --cover ../成品/01-竖版封面.jpg --cover-landscape ../成品/01-横版封面.jpg --cover-4-3 封面预览/4比3裁切.jpg
 $PY $S/voice.py clean      # 交付后清理候选与旧缓存
 ```
@@ -67,7 +68,11 @@ $PY $S/voice.py clean      # 交付后清理候选与旧缓存
 
 参考 [时间线约定](references/timeline.md)，先让每段旁白、字幕和视觉使用同一局部时间。全局 SRT 只加一次场景偏移。改变旁白文本或音频后必须重新对齐，再重算场景时长。
 
-运行 `python3 scripts/audit_timeline.py remotion/src/video/timeline.json --srt ../成品/字幕.srt`，检查段落衔接、字幕顺序、锚点范围、场景引用的锚点是否存在与音频时长。成片再运行 `~/.venvs/say-show/bin/python scripts/measure_rhythm.py 成片.mp4 --asr`，与参考范围比较运动、静止、字幕切换、语速、停顿和响度。这些检查不能替代观看和听音；它们不证明字幕发音正确。
+运行 `python3 scripts/audit_timeline.py remotion/src/video/timeline.json --srt ../成品/字幕.srt`，检查段落衔接、字幕顺序、锚点范围、场景引用的锚点是否存在与音频时长。成片再运行 `~/.venvs/say-show/bin/python scripts/measure_rhythm.py 成片.mp4 --asr`，与参考范围比较运动、静止、字幕切换、语速、停顿和响度。
+
+渲染前运行 `node scripts/layout_audit.mjs`（默认每 3 秒一帧，`--every 1` 加密，`--times 12.5,47` 只查指定秒数）。它逐帧渲染静帧，在页面里量出每行文字的实际位置，报告文字互相压住、文字浮在建筑或卡片上（透明 PNG 按像素透明度判断）、被对象盖住、出画、被祖先容器裁掉（内容区 y=890 的裁切就靠这一项发现）；报告与标注图写到 `排版检查/`。半透明（不透明度低于 0.6，`--min-opacity` 可调）的文字和转场里同一段文字的两份副本不算重叠。`--bottom 890` 额外检查不在字幕里的文字是否低于这条线；字幕组件带 `data-audit="caption"`，老工程没有这个标记时不要加 `--bottom`。有意叠在对象上的名牌或装饰字（如睡觉的 Zz）给文字加 `data-audit="ignore"`，有意垫在文字下面的对象加 `data-audit="backdrop"`，`data-audit-name` 给对象起个读得懂的名字。
+
+这些检查不能替代观看和听音：它们不证明字幕发音正确，采样之间一闪而过的重叠、旋转元素的精确轮廓也可能漏掉。
 
 ## 首轮与后续迭代
 
