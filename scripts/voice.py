@@ -7,7 +7,7 @@
   ~/.venvs/say-show/bin/python voice.py pick fix=2 date=3     # 采用候选：写入 video.json 的 seeds 并放进缓存
   ~/.venvs/say-show/bin/python voice.py clean                 # 删除候选与不再使用的缓存
 
-稿件格式：`## 段落id · 标题` 后接正文；`[[词]]` 为画面锚点，`|` 为字幕强制换条，两者都不进入配音和字幕；同一段中间空一行表示换话题，配音在此多停 timing.beat_pause 秒（默认 0.55）。
+稿件格式：`## 段落id · 标题` 后接正文；`[[词]]` 为画面锚点，`|` 为字幕强制换条，两者都不进入配音和字幕；同一段中间空一行表示换话题，配音在此多停 timing.beat_pause 秒（默认 0.55）。timing.gaps 可按段 id 覆盖段后停顿（如 {"open": 3.0}），用于只放音乐的换场。
 读音：video.json 的 pronounce（全局）与 pronounce_sections（按段）只改送给 TTS 的文字；数字后的 MB/GB 等自动拆成字母。
 声音模型不提供词边界，时间来自对最终音频的 Whisper 逐字识别，再与稿件逐字比对，没对上的字插值。
 不要把稿件原文作为 Whisper 提示词：实测会让对齐率大幅下降。
@@ -135,6 +135,16 @@ def voice_stats(wav):
     return sim, float(np.median(f0)) if f0 else 0.0
 
 
+def tail_db(wav):
+    """原始配音最后 60 ms 相对整段响度（dB）。高于 -35 dB 说明 TTS 没说完就断了（句末的字被截掉）。"""
+    x, sr = sf.read(wav)
+    x = x.mean(1) if x.ndim > 1 else x
+    hop = sr // 100
+    fr = x[: len(x) // hop * hop].reshape(-1, hop)
+    rms = np.sqrt((fr ** 2).mean(1))
+    return float(20 * np.log10(rms[-6:].mean() / (np.percentile(rms, 95) + 1e-9) + 1e-9))
+
+
 def compress(x, sr):
     """去掉首尾静音，把长于 max_pause 的静音压到 keep_pause（前后各留一半）。"""
     hop = sr // 100
@@ -142,7 +152,11 @@ def compress(x, sr):
     rms = np.sqrt((fr ** 2).mean(1))
     voiced = rms > np.percentile(rms, 95) * 10 ** (-35 / 20)
     idx = np.nonzero(voiced)[0]
-    a, b = max(idx[0] - 3, 0), min(idx[-1] + 8, len(voiced))
+    # 段尾：句末的字常常是降调、越说越轻（"下一期见"的"见"），按 -35 dB 判会被当成静音剪掉。
+    # 尾巴改用更低的门槛（-50 dB）找最后一个有声帧，再多留 0.2 秒。
+    tail = np.nonzero(rms > np.percentile(rms, 95) * 10 ** (-50 / 20))[0]
+    a, b = max(idx[0] - 3, 0), min(max(idx[-1] + 8, tail[-1] + 20), len(voiced))
+    voiced[idx[-1]:b] = True  # 尾巴整段保留，不当作句中停顿去压缩
     keep, i = [], a
     while i < b:
         j = i
@@ -245,17 +259,46 @@ def add_beats(proc, sec, start, end):
         if b - a < hop:
             continue
         rms = [np.sqrt((x[i:i + hop] ** 2).mean()) for i in range(a, b - hop, hop)]
-        cuts.append(a + int(np.argmin(rms)) * hop + hop // 2)
+        m = int(np.argmin(rms))
+        # 句间停顿被压短时，能量最低点可能还在上一个字的尾音里（"大家好"的"好"），从那里插静音会把尾音切断。
+        # 从最低点往后找下一个字的起音（比段落峰值低 30 dB 以内），停顿插在起音前 20 ms。
+        peak = np.percentile(np.abs(x), 99.5) + 1e-9
+        k2 = m
+        while k2 < len(rms) - 1 and rms[k2] < peak * 10 ** (-30 / 20):
+            k2 += 1
+        cuts.append(a + max(m, k2 - 2) * hop)
     if not cuts:
         return False
     for c in sorted(cuts, reverse=True):
-        x = np.concatenate([x[:c], np.zeros(int(beat * sr)), x[c:]])
+        # 切口前 40 ms 淡出、后 10 ms 淡入，避免数字静音前后出现硬切和咔哒声
+        fo, fi = min(c, int(0.04 * sr)), min(len(x) - c, int(0.01 * sr))
+        x = x.copy()
+        ramp = lambda n, up: (np.linspace(0, 1, n) if up else np.linspace(1, 0, n))
+        x[c - fo:c] = (x[c - fo:c].T * ramp(fo, False)).T
+        x[c:c + fi] = (x[c:c + fi].T * ramp(fi, True)).T
+        x = np.concatenate([x[:c], np.zeros((int(beat * sr),) + x.shape[1:]), x[c:]])
     sf.write(proc, x, sr)
     return True
 
 
+def tail_pad(sid):
+    """句末垫字：有些句子模型总在最后一个字中间收尾（"下一期见"的"见"），换种子也没用。
+    在 video.json 的 voice.tail_pad 里给这些段落在句末多垫一个字，合成后按听写把垫的字剪掉。"""
+    tp = CFG.get("voice", {}).get("tail_pad", {})
+    return tp.get("text", "好。") if sid in tp.get("sections", []) else ""
+
+
+def cut_pad(proc, end_last):
+    """把垫的字剪掉：保留到最后一个稿件字结束后 0.15 秒，末尾 40 ms 淡出。"""
+    y, sr = sf.read(proc)
+    n = min(len(y), int((end_last + 0.15) * sr))
+    y = y[:n].copy(); k = min(n, int(0.04 * sr))
+    y[n - k:] *= np.linspace(1, 0, k)[:, None] if y.ndim > 1 else np.linspace(1, 0, k)
+    sf.write(proc, y, sr)
+
+
 def build_section(sec):
-    text = tts_text(sec["display"], sec["id"])
+    text = tts_text(sec["display"], sec["id"]) + tail_pad(sec["id"])
     seed = CFG.get("seeds", {}).get(sec["id"])
     raw = CACHE / f"{sec['id']}-{cache_key(text, seed)}.wav"
     if not raw.exists():
@@ -264,11 +307,15 @@ def build_section(sec):
     proc = raw.with_name(raw.stem + "-处理.wav")
     prepare(raw, proc)
     start, end, matched, words = align(proc, sec["display"])
+    if tail_pad(sec["id"]):
+        cut_pad(proc, end[-1])
+        start, end, matched, words = align(proc, sec["display"])
     if sec["beats"] and add_beats(proc, sec, start, end):
         start, end, matched, words = align(proc, sec["display"])
     sim, f0 = voice_stats(raw)
     y, sr = sf.read(proc)
-    print(f"{sec['id']}: {len(y) / sr:.2f}s，稿件字对齐 {matched * 100:.0f}%，声线相似度 {sim:.3f}，基频 {f0:.0f} Hz" + ("  ⚠ 对齐率偏低，请抽查" if matched < 0.9 else ""), flush=True)
+    td = -99.0 if tail_pad(sec["id"]) else tail_db(raw)
+    print(f"{sec['id']}: {len(y) / sr:.2f}s，稿件字对齐 {matched * 100:.0f}%，声线相似度 {sim:.3f}，基频 {f0:.0f} Hz" + ("  ⚠ 对齐率偏低，请抽查" if matched < 0.9 else "") + (f"  ⚠ 句末被截（最后 60 ms 还有 {td:.0f} dB），用 takes 换种子" if td > -35 else ""), flush=True)
     display = sec["display"]; nidx, n = [], 0
     for c in display:
         nidx.append(n); n += c.isalnum()
@@ -291,14 +338,20 @@ def build():
     sections, captions, anchors, words = [], [], {}, []
     for i, s in enumerate(secs):
         st = t; pcm += s["audio"]; t += s["dur"]
-        gap = TM["section_gap"] if i < len(secs) - 1 else TM["tail"]
+        # timing.gaps 按段覆盖段后停顿：留给推进换场、路线回顾这类只放音乐的画面
+        gap = TM.get("gaps", {}).get(s["id"], TM["section_gap"]) if i < len(secs) - 1 else TM["tail"]
         pcm += b"\x00\x00" * int(gap * SR); t += gap
         sections.append({"id": s["id"], "title": s["title"], "start": st, "voiceEnd": st + s["dur"], "end": t})
         captions += [{"text": c["text"], "start": st + c["start"]} for c in s["captions"]]
         anchors.update({f"{s['id']}.{k}": st + v for k, v in s["anchor_times"].items()})
         words += [{"text": w["text"], "start": st + w["start"], "end": st + w["end"], "section": s["id"]} for w in s["words"]]
-    for a, b in zip(captions, captions[1:]):
+    # 字幕首尾相接；遇到长于 1.5 秒的段后留白，字幕在说完后 0.4 秒收起，留白里不挂上一句
+    ends = {x["id"]: x["voiceEnd"] for x in sections}
+    sec_of = [c for s in secs for c in [s["id"]] * len(s["captions"])]
+    for k, (a, b) in enumerate(zip(captions, captions[1:])):
         a["end"] = b["start"]
+        if sec_of[k] != sec_of[k + 1] and b["start"] - ends[sec_of[k]] > 1.5:
+            a["end"] = ends[sec_of[k]] + 0.4
     captions[-1]["end"] = sections[-1]["voiceEnd"] + 0.6
     OUT_AUDIO.parent.mkdir(parents=True, exist_ok=True)
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "s16le", "-ar", str(SR), "-ac", "1", "-i", "-", str(OUT_AUDIO)], input=pcm, check=True)
@@ -326,17 +379,21 @@ def takes(ids, seeds):
     secs = {s["id"]: s for s in parse_script()}
     log = TAKES / "takes.jsonl"
     for sid in ids:
-        sec = secs[sid]; text = tts_text(sec["display"], sid)
+        sec = secs[sid]; text = tts_text(sec["display"], sid) + tail_pad(sid)
         print(f"== {sid}  送给 TTS：{text}")
         for seed in seeds:
             raw = TAKES / f"{sid}-{seed}-{cache_key(text, seed)}.wav"
             if not raw.exists():
                 synth(text, seed, raw)
             proc = raw.with_name(raw.stem + "-处理.wav"); prepare(raw, proc)
-            _, _, matched, words = align(proc, sec["display"]); proc.unlink()
+            _, end, matched, words = align(proc, sec["display"])
+            if tail_pad(sid):
+                cut_pad(proc, end[-1]); _, _, matched, words = align(proc, sec["display"])
+            proc.unlink()
             sim, f0 = voice_stats(raw)
             asr = "".join(w["text"] for w in words)
-            print(f"  种子 {seed}  对齐 {matched * 100:.0f}%  声线 {sim:.3f}  基频 {f0:.0f} Hz  {asr}", flush=True)
+            td = -99.0 if tail_pad(sid) else tail_db(raw)
+            print(f"  种子 {seed}  对齐 {matched * 100:.0f}%  声线 {sim:.3f}  基频 {f0:.0f} Hz  收尾 {'✓' if td < -35 else '✗ 句末被截'}({td:.0f} dB)  {asr}", flush=True)
             with open(log, "a") as fh:
                 fh.write(json.dumps({"id": sid, "seed": seed, "matched": round(matched, 3), "sim": round(sim, 4), "f0": round(f0), "asr": asr}, ensure_ascii=False) + "\n")
 
@@ -346,7 +403,7 @@ def pick(pairs):
     seeds = CFG.setdefault("seeds", {})
     for p in pairs:
         sid, seed = p.split("="); seed = int(seed)
-        text = tts_text(secs[sid]["display"], sid); key = cache_key(text, seed)
+        text = tts_text(secs[sid]["display"], sid) + tail_pad(sid); key = cache_key(text, seed)
         src = TAKES / f"{sid}-{seed}-{key}.wav"
         if not src.exists():
             sys.exit(f"没有候选 {src.name}；先运行 takes，或稿件／读音已改动")
@@ -361,7 +418,12 @@ def pick(pairs):
 
 def clean():
     """只保留当前稿件与种子对应的缓存，删除候选。"""
-    keep = {f"{s['id']}-{cache_key(tts_text(s['display'], s['id']), CFG.get('seeds', {}).get(s['id']))}.wav" for s in parse_script()}
+    # 缓存 key 要和 build_section 一致：开了 voice.tail_pad 的段，送给 TTS 的文字多垫了一个字
+    keep = {f"{s['id']}-{cache_key(tts_text(s['display'], s['id']) + tail_pad(s['id']), CFG.get('seeds', {}).get(s['id']))}.wav" for s in parse_script()}
+    # 配乐整轨常放在同一个缓存目录（video.json 的 music.track），不能当旧配音删掉
+    track = CFG.get("music", {}).get("track")
+    if track:
+        keep.add(Path(track).name)
     removed = 0
     for f in CACHE.glob("*.wav"):
         if f.name not in keep:
